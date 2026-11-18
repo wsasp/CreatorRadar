@@ -9,11 +9,11 @@ from ctypes import wintypes
 from pathlib import Path
 from time import monotonic, time
 
-from .config import ROOT, VENV_PYTHON, bundle_command
+from .config import INTEGRATIONS, VENV_PYTHON, bundle_command
 from .links import parse_link
 
 REVISION = "d6f7c5bb906b6dac40ddf343ef9e26438a3de092"
-BRIDGE = ROOT / "phase1" / "bridge.py"
+BRIDGE = INTEGRATIONS / "bridge.py"
 
 
 class CollectionError(Exception):

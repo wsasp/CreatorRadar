@@ -7,7 +7,7 @@ from pathlib import Path
 from faster_whisper.utils import download_model
 from huggingface_hub.errors import LocalEntryNotFoundError
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "phase1"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "integrations"))
 from asr_bridge import WHISPER_REVISION  # noqa: E402
 
 try:

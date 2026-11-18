@@ -12,11 +12,11 @@ from . import analysis_client as ai
 from . import codex_client, collector, funasr_client, media, queue
 from . import discovery as d
 from .analysis_client import ProcessingError
-from .config import ROOT, bundle_command
+from .config import INTEGRATIONS, bundle_command
 from .schema import analyses, topics, transcriptions, works
 from .transcript_text import simplify_segments
 
-ASR_BRIDGE = ROOT / "phase1" / "asr_bridge.py"
+ASR_BRIDGE = INTEGRATIONS / "asr_bridge.py"
 ASR_MAX_SECONDS = 3600
 MESSAGES = {
     "video_required": "此作品需要确认为视频后才能转写，请检查原帖并重新采集。",

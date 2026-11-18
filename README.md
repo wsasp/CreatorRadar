@@ -24,6 +24,8 @@ bash start.sh
 
 ## 构建离线安装包
 
+`integrations/` 存放产品使用的 MediaCrawler 和 ASR 集成代码及依赖锁文件。手动验证脚本和相关测试位于 `tools/validation/`。本机初始化生成的采集环境和 ASR 缓存存放在 `.phase1/`。
+
 在目标系统的构建机上准备 `uv`、Git、Node.js/npm、FFmpeg 和 FFprobe。第一次构建需要联网准备依赖。Windows x64 构建机还需要 Inno Setup 6 和 Microsoft Visual C++ x64 Redistributable，可用 `--iscc` 指定 `ISCC.exe` 的位置。
 
 ```powershell

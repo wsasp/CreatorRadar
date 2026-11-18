@@ -13,7 +13,8 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "phase1"))
+INTEGRATIONS = ROOT / "integrations"
+sys.path.insert(0, str(INTEGRATIONS))
 from common import REVISION  # noqa: E402
 from runtime_guard import MANIFEST, file_hashes  # noqa: E402
 
@@ -185,10 +186,11 @@ def stage(args, root, scratch, arch):
     for directory in ("backend/creator_radar", "backend/migrations"):
         shutil.copytree(ROOT / directory, root / directory,
                         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    bundled_integrations = root / INTEGRATIONS.name
+    bundled_integrations.mkdir()
     for name in ("bridge.py", "crawler.py", "common.py", "cover_cache.py", "runtime_guard.py",
                  "asr_bridge.py"):
-        (root / "phase1").mkdir(exist_ok=True)
-        shutil.copy2(ROOT / "phase1" / name, root / "phase1" / name)
+        shutil.copy2(INTEGRATIONS / name, bundled_integrations / name)
     (root / "packaging").mkdir()
     for name in ("component.py", "launch.py"):
         shutil.copy2(ROOT / "packaging" / name, root / "packaging" / name)
@@ -201,7 +203,7 @@ def stage(args, root, scratch, arch):
         requirements = scratch / f"{name}-requirements.txt"
         export_deps(project, requirements, frozen=name == "crawler")
         install_deps(runtime / "packages" / name, requirements, python, env, existing, arch)
-    install_deps(runtime / "packages" / "asr", ROOT / "phase1" / "faster-whisper.lock", python, env,
+    install_deps(runtime / "packages" / "asr", INTEGRATIONS / "faster-whisper.lock", python, env,
                  ROOT / ".phase1" / "asr-env", arch)
 
     print("Staging Chromium and the pinned small model", flush=True)

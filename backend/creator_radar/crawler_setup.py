@@ -6,10 +6,10 @@ from tempfile import TemporaryDirectory
 from filelock import FileLock
 
 from .collector import REVISION, fixture_enabled, runtime_python
-from .config import ROOT, Config
+from .config import INTEGRATIONS, Config
 
 REPOSITORY = "https://github.com/NanmiCoder/MediaCrawler.git"
-PROBE = ROOT / "phase1" / "crawler.py"
+PROBE = INTEGRATIONS / "crawler.py"
 
 
 def check_checkout(runtime: Path) -> None:

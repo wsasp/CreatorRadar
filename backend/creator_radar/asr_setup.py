@@ -4,7 +4,7 @@ import subprocess
 from filelock import FileLock
 
 from .collector import fixture_enabled
-from .config import DEFAULT_ASR_PYTHON, ROOT, Config
+from .config import DEFAULT_ASR_PYTHON, INTEGRATIONS, Config
 from .processing import ASR_BRIDGE
 
 
@@ -32,7 +32,7 @@ def prepare_asr(config: Config) -> None:
                 subprocess.run(["uv", "venv", "--python", "3.12", environment], check=True)
             subprocess.run([
                 "uv", "pip", "install", "--python", python, "--reinstall",
-                "-r", ROOT / "phase1" / "faster-whisper.lock",
+                "-r", INTEGRATIONS / "faster-whisper.lock",
             ], check=True)
         # The bridge and the Worker share the same Hugging Face cache and model revision.
         subprocess.run(

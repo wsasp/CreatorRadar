@@ -7,6 +7,7 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT = Path(__file__).resolve().parents[2]
+INTEGRATIONS = ROOT / "integrations"
 VENV_PYTHON = Path("Scripts/python.exe" if os.name == "nt" else "bin/python")
 DEFAULT_ASR_PYTHON = ROOT / ".phase1" / "asr-env" / VENV_PYTHON
 BUNDLE = ROOT / "runtime"

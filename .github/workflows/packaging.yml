@@ -53,8 +53,8 @@ jobs:
           cache-suffix: ${{ matrix.target }}
           cache-dependency-glob: |
             backend/uv.lock
-            phase1/faster-whisper.lock
-            phase1/common.py
+            integrations/faster-whisper.lock
+            integrations/common.py
 
       - name: Build Windows installer
         if: runner.os == 'Windows'
