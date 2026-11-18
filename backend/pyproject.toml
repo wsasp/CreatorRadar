@@ -1,0 +1,35 @@
+[project]
+name = "creator-radar"
+version = "0.2.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "alembic>=1.16,<2",
+    "fastapi>=0.116,<1",
+    "filelock>=3.20,<5",
+    "httpx>=0.28,<1",
+    "keyring>=25.6,<26; sys_platform == 'win32' or sys_platform == 'darwin'",
+    "opencc>=1.4.2,<2",
+    "platformdirs>=4,<5",
+    "pydantic>=2.11,<3",
+    "pydantic-settings>=2.10,<3",
+    "sqlalchemy>=2.0,<2.1",
+    "uvicorn>=0.35,<1",
+]
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "ruff>=0.12,<1"]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["B008"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
