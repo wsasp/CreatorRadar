@@ -75,7 +75,7 @@ def export_deps(project, target, *, frozen=False):
 
 def copy_native(source, target, arch):
     if MAC:
-        run("lipo", "-verify_arch", arch, source)
+        run("lipo", source, "-verify_arch", arch)
         libraries = run("otool", "-L", source, capture=True).splitlines()
         for entry in libraries:
             if entry.startswith("\t") and not entry.strip().startswith(("/usr/lib/", "/System/")):
