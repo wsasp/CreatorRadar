@@ -9,7 +9,7 @@ from ctypes import wintypes
 from pathlib import Path
 from time import monotonic, time
 
-from .config import ROOT, VENV_PYTHON
+from .config import ROOT, VENV_PYTHON, bundle_command
 from .links import parse_link
 
 REVISION = "d6f7c5bb906b6dac40ddf343ef9e26438a3de092"
@@ -30,11 +30,12 @@ def fixture_enabled(config):
 
 def runtime_info(config):
     fixture = fixture_enabled(config)
-    ready = fixture or (
-        not config.crawler_setup_failed
-        and runtime_python(config.crawler_runtime).is_file()
-        and (config.crawler_runtime / ".git").exists()
-    )
+    if config.bundled:
+        installed = (config.crawler_runtime / ".creator-radar-manifest.json").is_file()
+    else:
+        installed = (runtime_python(config.crawler_runtime).is_file()
+                     and (config.crawler_runtime / ".git").exists())
+    ready = fixture or (installed and not config.crawler_setup_failed)
     return {
         "state": "fixture" if fixture else "ready" if ready else "unavailable",
         "revision": REVISION,
@@ -43,7 +44,8 @@ def runtime_info(config):
 
 
 @contextmanager
-def process_tree(command, *, cwd=None, env=None):
+def process_tree(command, *, cwd=None, env=None, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                 stderr=subprocess.DEVNULL):
     """Keep child processes owned by the caller, including on Worker exit on Windows."""
     windows = os.name == "nt"
     kernel = handle = None
@@ -95,9 +97,9 @@ def process_tree(command, *, cwd=None, env=None):
     try:
         process = subprocess.Popen(
             command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stdin=stdin,
+            stdout=stdout,
+            stderr=stderr,
             start_new_session=not windows,
             creationflags=subprocess.CREATE_NO_WINDOW if windows else 0,
             cwd=cwd,
@@ -121,8 +123,9 @@ def process_tree(command, *, cwd=None, env=None):
                 pass
         if process:
             process.wait()
-            process.stdin.close()
-            process.stdout.close()
+            for pipe in (process.stdin, process.stdout, process.stderr):
+                if pipe is not None:
+                    pipe.close()
 
 
 def communicate(command, payload, timeout, keep_running, *, cwd=None, env=None):
@@ -169,10 +172,10 @@ def run(config, request, keep_running):
     timeout = {"login": 720, "scan": 145, "search": 145, "media": 180}.get(
         request["operation"], 85,
     )
-    command = [
+    python = bundle_command("crawler") if config.bundled else [
         str(runtime_python(config.crawler_runtime)), "-X", "utf8", "-B",
-        str(BRIDGE), str(config.crawler_runtime.resolve()),
     ]
+    command = [*python, str(BRIDGE), str(config.crawler_runtime.resolve())]
     return json_process(command, request, timeout, keep_running, "collector_protocol")
 
 

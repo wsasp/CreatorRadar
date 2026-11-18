@@ -1,8 +1,14 @@
-import { useLayoutEffect, useState } from 'react';
+import { useLayoutEffect, useState, useSyncExternalStore } from 'react';
 
 export type ThemePreference = 'system' | 'light' | 'dark';
 // Keep the storage key in sync with the initial theme in index.html.
 const themeKey = 'creator-radar-theme';
+const systemTheme = matchMedia('(prefers-color-scheme: dark)');
+
+function subscribeToSystemTheme(onChange: () => void) {
+  systemTheme.addEventListener('change', onChange);
+  return () => systemTheme.removeEventListener('change', onChange);
+}
 
 function readTheme(): ThemePreference {
   try {
@@ -16,22 +22,12 @@ function readTheme(): ThemePreference {
 
 export function useTheme() {
   const [theme, setTheme] = useState(readTheme);
+  const systemIsDark = useSyncExternalStore(subscribeToSystemTheme, () => systemTheme.matches);
+  const resolvedTheme = theme === 'system' ? (systemIsDark ? 'dark' : 'light') : theme;
 
   useLayoutEffect(() => {
-    const root = document.documentElement;
-    if (theme !== 'system') {
-      root.dataset.theme = theme;
-      return;
-    }
-
-    const system = matchMedia('(prefers-color-scheme: dark)');
-    function followSystem() {
-      root.dataset.theme = system.matches ? 'dark' : 'light';
-    }
-    followSystem();
-    system.addEventListener('change', followSystem);
-    return () => system.removeEventListener('change', followSystem);
-  }, [theme]);
+    document.documentElement.dataset.theme = resolvedTheme;
+  }, [resolvedTheme]);
 
   function changeTheme(preference: ThemePreference) {
     setTheme(preference);
@@ -42,5 +38,5 @@ export function useTheme() {
     }
   }
 
-  return { theme, changeTheme };
+  return { theme, resolvedTheme, changeTheme };
 }

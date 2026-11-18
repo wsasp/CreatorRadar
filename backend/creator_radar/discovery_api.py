@@ -809,7 +809,8 @@ def routes(engine, config, job_view):
             "media_path": str(media.root(config)),
             "integrations": {
                 "crawler": collector.runtime_info(config),
-                "asr": "installed" if config.asr_python.is_file() else "unavailable",
+                "asr": "installed"
+                if config.bundled or config.asr_python.is_file() else "unavailable",
                 "ai": ai_state,
             },
             "sessions": {

@@ -4,6 +4,7 @@ import math
 import re
 import shutil
 from hashlib import sha256
+from pathlib import Path
 from threading import Event
 from uuid import uuid4
 
@@ -11,7 +12,7 @@ from . import analysis_client as ai
 from . import codex_client, collector, funasr_client, media, queue
 from . import discovery as d
 from .analysis_client import ProcessingError
-from .config import ROOT
+from .config import ROOT, bundle_command
 from .schema import analyses, topics, transcriptions, works
 from .transcript_text import simplify_segments
 
@@ -207,10 +208,12 @@ def topic_results(connection, topic, work, job_view):
 
 
 def run_asr(config, request, keep_running):
-    python = config.asr_python.absolute()
-    if not python.is_file():
+    python = bundle_command("asr") if config.bundled else [
+        str(config.asr_python.absolute()), "-X", "utf8", "-B",
+    ]
+    if not Path(python[0]).is_file():
         raise ProcessingError("asr_engine_unavailable")
-    command = [str(python), "-X", "utf8", "-B", str(ASR_BRIDGE)]
+    command = [*python, str(ASR_BRIDGE)]
     try:
         return collector.json_process(
             command, request, 60 if request["operation"] == "check" else 1800,

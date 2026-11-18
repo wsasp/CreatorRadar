@@ -1,0 +1,106 @@
+name: Build offline installers
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Package ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: windows-x64
+            runner: windows-2025
+            extension: exe
+          - target: macos-arm64
+            runner: macos-15
+            extension: pkg
+            ffmpeg_arch: arm64
+            ffmpeg_sha256: de8099093ec4de375880717a28e59d7ccfc54001bb69da3f7a3a6a5a98c0dc91
+          - target: macos-x86_64
+            runner: macos-15-intel
+            extension: pkg
+            ffmpeg_arch: amd64
+            ffmpeg_sha256: 360184cf61f7203ab46f409bd10eb7a1fcc5753d5e7de9eed4041bd80ced9c1c
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: '0.11.17'
+          enable-cache: true
+          cache-suffix: ${{ matrix.target }}
+          cache-dependency-glob: |
+            backend/uv.lock
+            phase1/faster-whisper.lock
+            phase1/common.py
+
+      - name: Build Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = '8.1.1'
+          $archive = Join-Path $env:RUNNER_TEMP "ffmpeg-$version-essentials_build.7z"
+          $url = "https://github.com/GyanD/codexffmpeg/releases/download/$version/ffmpeg-$version-essentials_build.7z"
+          curl.exe --fail --location --silent --show-error --retry 3 --retry-all-errors --output $archive $url
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $expected = '23ad8969fbe701d44e6e7e2b97c5fae4a71224fc33a2560a9034e5110d029d15'
+          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne $expected) {
+              throw 'FFmpeg archive checksum mismatch'
+          }
+          tar.exe -xf $archive -C $env:RUNNER_TEMP
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $media = Join-Path $env:RUNNER_TEMP "ffmpeg-$version-essentials_build/bin"
+          if (-not (Test-Path (Join-Path $env:SystemRoot 'System32/msvcp140.dll'))) {
+              choco install vcredist140 --yes --no-progress
+              if ($LASTEXITCODE -notin @(0, 3010)) { exit $LASTEXITCODE }
+          }
+          .\package.ps1 --ffmpeg-dir $media
+
+      - name: Build macOS installer
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          FFMPEG_ARCH: ${{ matrix.ffmpeg_arch }}
+          FFMPEG_SHA256: ${{ matrix.ffmpeg_sha256 }}
+        run: |
+          version=v9.0.2
+          media="$RUNNER_TEMP/ffmpeg-bin"
+          archive="$RUNNER_TEMP/ffmpeg-darwin-$FFMPEG_ARCH.tar.gz"
+          mkdir -p "$media"
+          curl --fail --location --silent --show-error --retry 3 --retry-all-errors --output "$archive" \
+            "https://github.com/binmgr/ffmpeg/releases/download/$version/ffmpeg-darwin-$FFMPEG_ARCH.tar.gz"
+          printf '%s  %s\n' "$FFMPEG_SHA256" "$archive" | shasum -a 256 -c -
+          tar -xzf "$archive" -C "$media"
+          bash package.sh --ffmpeg-dir "$media" --node "$(command -v node)"
+
+      - name: Upload installer
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: CreatorRadar-${{ matrix.target }}
+          path: release/CreatorRadar-*-${{ matrix.target }}.${{ matrix.extension }}
+          if-no-files-found: error
+          overwrite: true
+          compression-level: 0
+          retention-days: 14

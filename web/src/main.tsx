@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
   BookOpenText, ChevronRight, Compass, History, LayoutDashboard, Menu,
-  Radar, Search, Settings2, Users, Workflow, Zap,
+  Moon, Radar, Search, Settings2, Sun, Users, Workflow, Zap,
 } from 'lucide-react';
 import { useState } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -19,7 +19,10 @@ import './workspace.css';
 function Workspace() {
   const [menu, setMenu] = useState(false);
   const [quick, setQuick] = useState(false);
-  const { theme, changeTheme } = useTheme();
+  const { theme, resolvedTheme, changeTheme } = useTheme();
+  const nextTheme = resolvedTheme === 'dark' ? 'light' : 'dark';
+  const themeLabel = nextTheme === 'light' ? '切换到浅色模式' : '切换到深色模式';
+  const ThemeIcon = nextTheme === 'light' ? Sun : Moon;
   const { pathname } = useLocation();
   const navigation = [
     { path: '/', label: '总览', icon: LayoutDashboard, page: <OverviewPage /> },
@@ -55,9 +58,13 @@ function Workspace() {
         <Compass size={17} /><span>工作台</span><ChevronRight size={14} />
         <strong>{navigation.find(({ path }) => path === pathname)?.label || '页面未找到'}</strong>
       </div>
-      <div className="top-actions"><button className="button primary quick-button" onClick={() => setQuick(true)}>
-        <Zap size={17} fill="currentColor" />快速采集
-      </button></div>
+      <div className="top-actions">
+        <button type="button" className="icon-button" aria-label={themeLabel} title={themeLabel}
+          onClick={() => changeTheme(nextTheme)}><ThemeIcon size={18} aria-hidden="true" /></button>
+        <button className="button primary quick-button" onClick={() => setQuick(true)}>
+          <Zap size={17} fill="currentColor" />快速采集
+        </button>
+      </div>
     </header>
     <main className="main">
       <Routes>

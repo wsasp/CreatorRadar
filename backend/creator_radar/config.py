@@ -9,6 +9,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 ROOT = Path(__file__).resolve().parents[2]
 VENV_PYTHON = Path("Scripts/python.exe" if os.name == "nt" else "bin/python")
 DEFAULT_ASR_PYTHON = ROOT / ".phase1" / "asr-env" / VENV_PYTHON
+BUNDLE = ROOT / "runtime"
+
+
+def bundle_command(component: str) -> list[str]:
+    python = BUNDLE / "python" / ("python.exe" if os.name == "nt" else "bin/python3.12")
+    return [str(python), "-I", "-X", "utf8", "-B",
+            str(ROOT / "packaging" / "component.py"), component]
 
 
 def default_data_dir(workspace: str) -> Path:
@@ -29,7 +36,10 @@ class Config(BaseSettings):
     web_dist: Path = ROOT / "web" / "dist"
     port: int = Field(default=8765, ge=1, le=65535)
     dev_port: int | None = Field(default=None, ge=1, le=65535)
-    crawler_runtime: Path = ROOT / ".phase1" / "MediaCrawler"
+    bundled: bool = False
+    crawler_runtime: Path = Field(default_factory=lambda data: (
+        BUNDLE if data["bundled"] else ROOT / ".phase1"
+    ) / "MediaCrawler")
     crawler_setup_failed: bool = False
     crawler_fixture: bool = False
     crawler_fixture_media: Path | None = None

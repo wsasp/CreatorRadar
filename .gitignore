@@ -1,10 +1,13 @@
 /.phase1/
 /.creator-radar/
+/release/
 /backend/.venv/
 /backend/.ruff_cache/
 /web/dist/
 /web/node_modules/
 /web/playwright-report/
 /web/test-results/
+/video-prototype/dist/
+/video-prototype/node_modules/
 __pycache__/
 .pytest_cache/

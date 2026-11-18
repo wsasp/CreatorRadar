@@ -56,7 +56,8 @@ test('workspace theme follows the system and remembers explicit choices', async 
   await expect(theme).toHaveValue('light');
   await expect(root).toHaveCSS('color-scheme', 'light');
 
-  await theme.selectOption('dark');
+  await page.getByRole('button', { name: '切换到深色模式' }).click();
+  await expect(theme).toHaveValue('dark');
   await page.emulateMedia({ colorScheme: 'light' });
   await page.reload();
   await expect(theme).toHaveValue('dark');
@@ -71,8 +72,12 @@ test('workspace theme follows the system and remembers explicit choices', async 
   await page.getByRole('link', { name: '系统设置' }).click();
   await theme.selectOption('system');
   await expect(root).toHaveCSS('color-scheme', 'light');
+  await expect(page.getByRole('button', { name: '切换到深色模式' })).toBeVisible();
   await page.emulateMedia({ colorScheme: 'dark' });
   await expect(root).toHaveCSS('color-scheme', 'dark');
+  await page.getByRole('button', { name: '切换到浅色模式' }).press('Enter');
+  await expect(root).toHaveCSS('color-scheme', 'light');
+  await expect(theme).toHaveValue('light');
 });
 
 test('empty workspace and quick capture validation', async ({ page, request }) => {
