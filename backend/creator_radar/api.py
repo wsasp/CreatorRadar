@@ -121,7 +121,12 @@ def create_app(config: Config | None = None):
         return error(exc.status, exc.code, str(exc), exc.job_id)
 
     @app.exception_handler(RequestValidationError)
-    async def validation_error(_request, _exc):
+    async def validation_error(_request, exc):
+        if any(tuple(issue["loc"]) == ("body", "asr", "base_url") for issue in exc.errors()):
+            return error(
+                422, "invalid_request",
+                "FunASR API 地址无效。请填写 HTTPS 地址，或使用本机或局域网 IP 的 HTTP 地址。",
+            )
         return error(422, "invalid_request", "请求参数格式有误")
 
     @app.exception_handler(HTTPException)

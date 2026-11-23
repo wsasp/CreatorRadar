@@ -77,8 +77,8 @@ export type Work = {
   published_at: string | null; collected_at: string; duration_seconds: number | null;
   metrics: Record<string, Measure>; reads: Measure | null; topic_id: string | null; sources?: Source[];
 };
-export type Topic = { id: string; work: Work; source: Source; archived: boolean };
-export type Segment = { start: number; end: number; text: string };
+export type Topic = { id: string; work: Work; source: Source; archived: boolean; transcribed: boolean };
+export type Segment = { start: number; end: number; text: string; estimated?: boolean };
 export type Transcription = {
   id: string; engine: string; model: string; model_revision: string | null; language: string;
   created_at: string; segments: Segment[];
@@ -87,7 +87,7 @@ export type AnalysisPoint = { text: string; refs: number[] };
 export type Analysis = {
   id: string; model: string; created_at: string; stale: boolean;
   input_snapshot: {
-    kind: 'video' | 'article'; sources: { id: number; text: string; start?: number; end?: number }[];
+    kind: 'video' | 'article'; sources: { id: number; text: string; start?: number; end?: number; estimated?: boolean }[];
   };
   content: {
     summary: AnalysisPoint; hook: AnalysisPoint; structure: AnalysisPoint[];

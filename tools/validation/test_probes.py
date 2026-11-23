@@ -2,7 +2,6 @@ import asyncio
 import errno
 import json
 import sys
-from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -114,26 +113,47 @@ def test_asr_rejects_timestamp_beyond_audio():
 def test_bridge_scan_uses_cursor_cutoff_and_keeps_partial_rows(monkeypatch):
     import bridge
 
-    calls = []
+    endpoint = "https://www-hj.douyin.com/aweme/v1/web/aweme/post/"
+    profile = "https://www.douyin.com/user/account"
+    listeners = {}
 
-    async def page(_client, _platform, _request, index, cursor, search_id):
-        calls.append((index, cursor))
-        if index == 2:
-            raise ProbeError("rate_limited")
-        return [
-            {"aweme_id": "10", "create_time": 100, "video": {},
-             "statistics": {"play_count": 0}},
-            {"aweme_id": "9", "create_time": 10, "video": {}},
-            {"aweme_id": "10", "create_time": 100, "video": {}},
-        ], 15, search_id
+    def emit(host, account, cursor, status, payload=None):
+        async def read_json():
+            return payload
+
+        listeners["response"](SimpleNamespace(
+            url=f"{host}?sec_user_id={account}&max_cursor={cursor}",
+            request=SimpleNamespace(method="GET"), status=status, json=read_json,
+        ))
+
+    async def open_profile(url, **_options):
+        assert url == profile
+        emit(endpoint, "account", 15, 429)
+        emit(endpoint, "other", 0, 403)
+        emit(endpoint.replace("douyin.com", "example.test"), "account", 0, 403)
+        emit(endpoint, "account", 0, 200, {
+            "aweme_list": [
+                {"aweme_id": "10", "create_time": 100, "video": {},
+                 "statistics": {"play_count": 0}},
+                {"aweme_id": "9", "create_time": 10, "video": {}},
+                {"aweme_id": "10", "create_time": 100, "video": {}},
+            ],
+            "has_more": 1,
+            "max_cursor": 15,
+        })
 
     async def no_delay(_seconds):
         pass
 
-    monkeypatch.setattr(bridge, "page", page)
+    browser_page = SimpleNamespace(
+        on=listeners.__setitem__, remove_listener=lambda name, _: listeners.pop(name),
+        goto=open_profile,
+    )
     monkeypatch.setattr(bridge.asyncio, "sleep", no_delay)
-    result = asyncio.run(collect(None, "douyin", {"limit": 5, "cutoff_seconds": 50}))
-    assert calls == [(1, ""), (2, 15)]
+    result = asyncio.run(collect(SimpleNamespace(playwright_page=browser_page), "douyin", {
+        "operation": "scan", "url": profile, "limit": 5, "cutoff_seconds": 50,
+    }))
+    assert listeners == {}
     assert result["partial_error"] == "rate_limited"
     assert [item["native_id"] for item in result["items"]] == ["10"]
     assert result["items"][0]["metrics"]["plays"]["count"] == 0
@@ -180,30 +200,38 @@ def test_xhs_gallery_keeps_note_order_and_groups_alternate_urls():
     assert row["image_candidates"][second] == [second]
 
 
-def test_douyin_page_detail_matches_native_id():
+@pytest.mark.parametrize("status, error", [(200, None), (401, "awaiting_login"), (429, "rate_limited")])
+def test_douyin_page_detail_matches_native_id(status, error):
     url = "https://www.douyin.com/video/123"
     endpoint = "https://www.douyin.com/aweme/v1/web/aweme/detail/?aweme_id="
     item = {"aweme_id": "123", "video": {"duration": 5000}}
+    listeners = {}
 
-    async def response_json():
-        return {"aweme_detail": item}
+    def response(address, payload, status=200, method="GET"):
+        async def response_json():
+            return {"aweme_detail": payload}
+
+        return SimpleNamespace(url=address, status=status, ok=status == 200, json=response_json,
+                               request=SimpleNamespace(method=method))
 
     async def goto(target, **_options):
         assert target == url
+        unrelated = {**item, "video": {"duration": 1000}}
+        observe = listeners["response"]
+        observe(response(endpoint + "456", unrelated))
+        observe(response(endpoint.replace("douyin.com", "example.com") + "123", unrelated))
+        observe(response(endpoint + "123", unrelated, method="POST"))
+        observe(response(endpoint + "123", None, status))
+        observe(response(endpoint + "123", {**item, "aweme_id": "456"}))
+        observe(response(endpoint.replace("www.", "www-hj.") + "123", item))
 
-    @asynccontextmanager
-    async def expect_response(predicate, **_options):
-        assert not predicate(SimpleNamespace(url=endpoint + "456"))
-        assert not predicate(SimpleNamespace(url=endpoint.replace("douyin.com", "example.com") + "123"))
-        assert predicate(SimpleNamespace(url=endpoint + "123"))
+    def remove_listener(event, handler):
+        assert listeners.pop(event) is handler
 
-        async def response():
-            return SimpleNamespace(status=200, ok=True, json=response_json)
-
-        yield SimpleNamespace(value=response())
-
-    page = SimpleNamespace(goto=goto, expect_response=expect_response)
-    assert asyncio.run(douyin_page_detail(page, url, "123")) == item
-    item["aweme_id"] = "456"
-    with pytest.raises(ProbeError, match="douyin_detail_unavailable"):
-        asyncio.run(douyin_page_detail(page, url, "123"))
+    page = SimpleNamespace(goto=goto, on=listeners.__setitem__, remove_listener=remove_listener)
+    if error:
+        with pytest.raises(ProbeError, match=error):
+            asyncio.run(douyin_page_detail(page, url, "123"))
+    else:
+        assert asyncio.run(douyin_page_detail(page, url, "123")) == item
+    assert not listeners

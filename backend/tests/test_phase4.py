@@ -100,22 +100,42 @@ def seed_audio(config, engine, work_id):
     return target
 
 
-def test_remote_funasr_settings_and_transcription(workspace, monkeypatch):
+@pytest.mark.parametrize(
+    ("api_key", "base_url"),
+    [
+        (None, "http://192.168.1.20:10999/v1"),
+        ("", "http://10.0.0.20:10999/v1"),
+        ("  ", "http://[fd12:3456::20]:10999/v1"),
+        (KEY, BASE),
+    ],
+    ids=["omitted", "empty", "blank", "saved"],
+)
+def test_remote_funasr_settings_and_transcription(workspace, monkeypatch, api_key, base_url):
     config, engine, client = workspace
     secrets = {}
-    monkeypatch.setattr(funasr_client, "service_key", lambda config, base: secrets.get(base))
 
-    def save_key(_config, base, key):
-        secrets[base] = key
+    def read_key(_config, base, *, namespace):
+        assert namespace == "FunASR"
+        if api_key is None:
+            raise ai.ProcessingError("credential_unavailable")
+        return secrets.get(base)
 
-    monkeypatch.setattr(funasr_client, "save_key", save_key)
-    asr = {"engine": "FunASR", "model": "paraformer", "language": "zh", "base_url": BASE}
-    missing = client.patch(PREFIX + "settings", json={"asr": asr})
-    assert missing.json()["code"] == "asr_api_key_required"
-    settings = client.patch(PREFIX + "settings", json={"asr": {
-        **asr, "base_url": BASE + "/audio/transcriptions", "api_key": KEY,
-    }})
-    assert settings.json()["asr"] == {**asr, "key_configured": True}
+    def write_key(_config, base, key, *, namespace):
+        assert namespace == "FunASR"
+        if key is None:
+            secrets.pop(base, None)
+        else:
+            secrets[base] = key
+
+    monkeypatch.setattr(funasr_client, "read_key", read_key)
+    monkeypatch.setattr(funasr_client, "write_key", write_key)
+    asr = {"engine": "FunASR", "model": "paraformer", "language": "zh", "base_url": base_url}
+    payload = {**asr, "base_url": base_url + "/audio/transcriptions"}
+    if api_key is not None:
+        payload["api_key"] = api_key
+    settings = client.patch(PREFIX + "settings", json={"asr": payload})
+    assert settings.is_success, settings.text
+    assert settings.json()["asr"] == {**asr, "key_configured": api_key == KEY}
     assert KEY not in settings.text
 
     requests = []
@@ -123,7 +143,7 @@ def test_remote_funasr_settings_and_transcription(workspace, monkeypatch):
 
     def handler(request):
         requests.append(request.url.path)
-        assert request.headers["authorization"] == f"Bearer {KEY}"
+        assert request.headers.get("authorization") == (f"Bearer {KEY}" if api_key == KEY else None)
         if request.url.path == "/v1/models":
             return httpx.Response(200, json={"data": [{"id": "paraformer"}]})
         assert request.url.path == "/v1/audio/transcriptions"
@@ -155,6 +175,68 @@ def test_remote_funasr_settings_and_transcription(workspace, monkeypatch):
     assert response.is_success
     assert execute(workspace)["error_code"] == "asr_api_settings_changed"
     assert requests == ["/v1/models", "/v1/audio/transcriptions"]
+
+    if api_key == KEY:
+        response = client.patch(PREFIX + "settings", json={"asr": {**asr, "api_key": ""}})
+        assert response.json()["asr"]["key_configured"] is True
+        response = client.patch(PREFIX + "settings", json={"asr": {**asr, "api_key": None}})
+        assert response.json()["asr"]["key_configured"] is False
+        assert base_url not in secrets
+
+
+def test_http_address_validation_applies_separately_to_funasr_and_ai(workspace):
+    _, _, client = workspace
+    response = client.patch(PREFIX + "settings", json={"asr": {
+        "engine": "FunASR", "model": "paraformer", "language": "zh",
+        "base_url": "http://asr.example.com/v1",
+    }})
+    assert response.status_code == 422
+    assert "FunASR API 地址无效" in response.json()["message"]
+
+    response = client.patch(PREFIX + "settings", json={"ai": {
+        "model": "test-model", "base_url": "http://192.168.1.20:10999/v1",
+    }})
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("timing", ["equal", "proportional", "aligned", "irregular"])
+def test_funasr_preserves_sentences_across_coarse_boundaries(timing):
+    first = "引起了大家的广泛关注。而且呢它"
+    second = "是一个非游戏领域的从业者。"
+    duration = 25.839
+    cut = {
+        "proportional": duration * len(first) / (len(first) + len(second)),
+        "irregular": 8,
+    }.get(timing, 12.919)
+    segments = [{"start": 0, "end": cut, "text": first},
+                {"start": cut, "end": duration, "text": second}]
+    rows = segments if timing != "aligned" else [
+        {**segments[0], "words": [{"start": 0, "end": 1, "word": "引起"}]}, segments[1],
+    ]
+    result = funasr_client.split_coarse_segments(segments, rows, first + second, duration)
+    if timing in {"aligned", "irregular"}:
+        assert result == segments
+        return
+    assert [segment["text"] for segment in result] == [
+        "引起了大家的广泛关注。", "而且呢它是一个非游戏领域的从业者。",
+    ]
+    assert all(segment["estimated"] for segment in result)
+    assert 0 == result[0]["start"] < result[0]["end"] == result[1]["start"]
+    assert result[1]["end"] == duration
+
+
+def test_funasr_coarse_boundaries_when_a_fixed_width_chunk_was_trimmed():
+    first = ("甲" * 80 + "引起了大家的广泛关注。而且呢它")[-80:]
+    second = ("是一个非游戏领域的从业者。" + "乙" * 80)[:79]
+    rows = [
+        {"start": 0, "end": 8, "text": first},
+        {"start": 8, "end": 16, "text": second},
+        {"start": 16, "end": 16.2, "text": "完。"},
+    ]
+    text = "".join(row["text"] for row in rows)
+    result = funasr_client.split_coarse_segments(rows, rows, text, 16.2)
+    assert result[1]["text"] == "而且呢它是一个非游戏领域的从业者。"
+    assert "".join(row["text"] for row in result) == text
 
 
 def example(ref=1):
@@ -262,6 +344,7 @@ def test_migrating_phase3_keeps_topics_and_imports_completed_media(tmp_path):
     with engine.connect() as connection:
         topic = connection.execute(select(topics)).mappings().one()
         assert topic["id"] == topic_id and topic["archived"]
+        assert topic["withdrawn"] is False
         assert topic["transcription_id"] is None and topic["analysis_id"] is None
         assert connection.scalar(select(media_cache.c.media_path)) == path
         assert not connection.exec_driver_sql("PRAGMA foreign_key_check").all()
@@ -316,8 +399,10 @@ def test_transcribe_retry_uses_audio_and_preserves_success(workspace, monkeypatc
     article = capture(workspace, ARTICLE)
     article_asr = PREFIX + "topics/" + article["topic_id"] + "/transcriptions"
     assert client.post(article_asr).status_code == 409
+    assert not any(topic["transcribed"] for topic in get(client, "topics")["items"])
     assert client.post(PREFIX + "topics/" + item["work_id"] + "/transcriptions").status_code == 404
     assert client.post(PREFIX + path + "/analyses").json()["code"] == "transcript_required"
+    collect = collector.run
 
     def no_download(*_args):
         pytest.fail("Cached PCM must be reused")
@@ -329,6 +414,9 @@ def test_transcribe_retry_uses_audio_and_preserves_success(workspace, monkeypatc
     assert execute(workspace)["status"] == "succeeded"
     original = get(client, path)["transcription"]
     assert original["segments"] == [{"start": 0, "end": 1, "text": "一段转写。"}]
+    assert [topic["id"] for topic in get(client, "topics")["items"] if topic["transcribed"]] == [
+        item["topic_id"],
+    ]
     assert get(client, "overview")["transcription"] == {"completed": 1, "total": 1}
     phase_events = get(client, f"events?job_id={job_id}")["items"]
     assert {"media", "audio_extract", "transcribing"} <= {row["code"] for row in phase_events}
@@ -343,11 +431,19 @@ def test_transcribe_retry_uses_audio_and_preserves_success(workspace, monkeypatc
         "failed", "no_speech", "transcribing",
     )
     assert get(client, path)["transcription"] == original
+    assert get(client, "topics?platform=bilibili")["items"][0]["transcribed"] is True
     assert get(client, path)["processing_jobs"]["asr"]["id"] == failed_id
     monkeypatch.setattr(processing, "run_asr", transcript)
     post(client, f"jobs/{failed_id}/retry")
     assert execute(workspace)["attempt_count"] == 2
-    assert get(client, path)["transcription"]["id"] != original["id"]
+    latest = get(client, path)["transcription"]
+    assert latest["id"] != original["id"]
+    assert client.delete(PREFIX + path).is_success
+    assert get(client, "overview")["transcription"] == {"completed": 0, "total": 0}
+    assert client.post(PREFIX + endpoint).status_code == 404
+    monkeypatch.setattr(collector, "run", collect)
+    assert capture(workspace)["topic_id"] == item["topic_id"]
+    assert get(client, path)["transcription"] == latest
 
 
 @pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"), reason="FFmpeg")

@@ -1,15 +1,23 @@
 import asyncio
+import re
 import wave
 from contextlib import suppress
 from hashlib import file_digest
+from itertools import accumulate
+from math import isclose
 
 import httpx
 
 from .analysis_client import ProcessingError, read_key, write_key
 
+SENTENCE_END = re.compile(r"""[。！？!?…]+[”’」』）》】"')\]]*|[.]+[”’」』）》】"')\]]*(?=\s|$)""")
+
 
 def service_key(config, base_url):
-    return read_key(config, base_url, namespace="FunASR")
+    try:
+        return read_key(config, base_url, namespace="FunASR")
+    except ProcessingError:
+        return None
 
 
 def save_key(config, base_url, key):
@@ -17,7 +25,7 @@ def save_key(config, base_url, key):
 
 
 async def request(base_url, key, keep_running, method, path, *, timeout, **kwargs):
-    headers = {"Authorization": f"Bearer {key}"}
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
     try:
         async with (
             asyncio.timeout(timeout),
@@ -62,6 +70,58 @@ async def check(values, key):
     return {"engine": "ready", "model": "ready" if available else "unavailable"}
 
 
+def split_coarse_segments(segments, rows, text, duration):
+    # FunASR's fallback covers the whole audio, with equal or text-proportional slices.
+    if not isinstance(text, str) or any(
+        row.get("words") or row.get("timestamp") or row.get("timestamps") for row in rows
+    ):
+        return segments
+    text = text.strip()
+    parts = [row["text"] for row in rows]
+    if not text or "".join(text.split()) != "".join("".join(parts).split()):
+        return segments
+
+    count = len(segments)
+    previous_end = 0
+    for segment in segments:
+        start, end = segment["start"], segment["end"]
+        if start < previous_end or not isclose(start, previous_end, abs_tol=0.002):
+            return segments
+        previous_end = end
+
+    def matches_lengths(lengths):
+        total = sum(lengths)
+        return all(isclose(segment["end"], duration * consumed / total, abs_tol=0.002)
+                   for segment, consumed in zip(segments, accumulate(lengths), strict=True))
+
+    lengths = list(map(len, parts))
+    layouts = [[1] * count, lengths]
+    width = max(lengths)
+    if count >= 3 and all(length >= width - 2 for length in lengths[:-1]):
+        # Some servers remove whitespace from fixed-width text after assigning times.
+        layouts.append([width] * (count - 1) + lengths[-1:])
+    if not any(matches_lengths(layout) for layout in layouts):
+        return segments
+
+    # No word alignment is available, so punctuation sets the text boundaries only.
+    boundaries = [match.end() for match in SENTENCE_END.finditer(text)]
+    if not boundaries:
+        return [{**segment, "estimated": True} for segment in segments]
+    if boundaries[-1] < len(text):
+        boundaries.append(len(text))
+    result = []
+    offset = 0
+    first_start = start = segments[0]["start"]
+    for boundary in boundaries:
+        sentence = text[offset:boundary].strip()
+        if sentence:
+            end = first_start + (previous_end - first_start) * boundary / len(text)
+            result.append({"start": start, "end": end, "text": sentence, "estimated": True})
+            start = end
+        offset = boundary
+    return result
+
+
 async def transcribe(values, key, audio, keep_running):
     try:
         with wave.open(str(audio), "rb") as pcm:
@@ -88,11 +148,16 @@ async def transcribe(values, key, audio, keep_running):
             start, end, text = row["start"], row["end"], row["text"].strip()
             if type(start) not in (int, float) or type(end) not in (int, float):
                 raise ValueError
-            if key in text or not 0 <= start < end <= duration + 0.1 or start >= duration:
+            if (key and key in text) or not 0 <= start < end <= duration + 0.1 or start >= duration:
                 raise ValueError
             segments.append({"start": start, "end": min(end, duration), "text": text})
         if not segments:
             raise ValueError
+        text = result.get("text")
+        if key and isinstance(text, str) and key in text:
+            raise ValueError
+        if not (result.get("words") or result.get("timestamp") or result.get("timestamps")):
+            segments = split_coarse_segments(segments, rows, text, duration)
     except (AttributeError, KeyError, TypeError, ValueError):
         raise ProcessingError("asr_api_invalid_output") from None
     return {"engine": "FunASR", "model": values["model"], "model_revision": None,

@@ -35,7 +35,6 @@ MESSAGES = {
     "asr_timeout": "转写超时，可检查运行环境后重试。",
     "asr_invalid_segments": "转写引擎返回了无效的分段时间或文本。",
     "asr_failed": "转写失败，请检查 ASR 环境后重试。",
-    "asr_api_key_required": "请先保存该 FunASR 服务的 API Key。",
     "asr_api_settings_changed": "FunASR 转写设置已更改，请回到选题详情重新提交。",
     "asr_api_network": "无法连接 FunASR 服务，请检查 API 地址和网络。",
     "asr_api_auth": "FunASR 服务拒绝访问，请检查 API Key 和模型权限。",
@@ -120,13 +119,6 @@ def api_key(config, selection):
     return key
 
 
-def funasr_key(config, base_url):
-    key = funasr_client.service_key(config, base_url)
-    if not key:
-        raise ProcessingError("asr_api_key_required")
-    return key
-
-
 async def generate_analysis(config, selection, snapshot, keep_running):
     model = selection["model"]
     if selection["provider"] == "codex_cli":
@@ -147,6 +139,8 @@ async def generate_analysis(config, selection, snapshot, keep_running):
 
 def submit(connection, config, topic_id, kind):
     topic, work = topic_and_work(connection, topic_id)
+    if topic["withdrawn"]:
+        raise d.problem(404, "topic_not_found", "找不到该选题。")
     job_column = topics.c.asr_job_id if kind == "asr" else topics.c.analysis_job_id
     existing = topic[job_column.name]
     if existing and queue.require_job(connection, existing)["status"] in ("queued", "running"):
@@ -157,8 +151,7 @@ def submit(connection, config, topic_id, kind):
         if kind == "asr":
             if work["kind"] != "video":
                 raise ProcessingError("video_required")
-            if base_url := values["asr"].get("base_url"):
-                funasr_key(config, base_url)
+            if values["asr"].get("base_url"):
                 parameters["asr"] = values["asr"]
         else:
             snapshot = analysis_snapshot(connection, topic, work)
@@ -238,7 +231,8 @@ def check_asr(config, values):
                 pass
         tools[name] = state
     if base_url := values.get("base_url"):
-        status = asyncio.run(funasr_client.check(values, funasr_key(config, base_url)))
+        key = funasr_client.service_key(config, base_url)
+        status = asyncio.run(funasr_client.check(values, key))
     else:
         try:
             status = run_asr(config, {**values, "operation": "check"}, lambda: True)
@@ -254,7 +248,7 @@ def transcribe(engine, config, job, work, values, stage, keep_running):
     queued_asr = job["parameters"].get("asr")
     if (base_url or queued_asr) and queued_asr != asr:
         raise ProcessingError("asr_api_settings_changed")
-    key = funasr_key(config, base_url) if base_url else None
+    key = funasr_client.service_key(config, base_url) if base_url else None
     stage("media", "正在检查缓存和获取视频媒体。")
     ffprobe = shutil.which("ffprobe")
     with engine.connect() as connection:
@@ -352,7 +346,7 @@ def transcribe(engine, config, job, work, values, stage, keep_running):
     else:
         stage("audio_extract", "已复用有效音轨。")
 
-    if key is not None:
+    if base_url:
         stage("transcribing", "正在使用 FunASR API 转写音轨。")
         result = asyncio.run(funasr_client.transcribe(asr, key, audio, keep_running))
     else:

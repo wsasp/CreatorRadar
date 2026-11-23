@@ -146,12 +146,19 @@ function Original({ work, detail = false }: { work: Work; detail?: boolean }) {
     : <button type="button" className={className} disabled title="该作品暂无原链接"><ExternalLink size={14} />{label}</button>;
 }
 
-function WorkCard({ work, open, label, compactMetrics }: { work: Work; open: () => void; label?: string; compactMetrics?: boolean }) {
+function WorkCard({ work, open, label, transcribed, compactMetrics }: {
+  work: Work; open: () => void; label?: string; transcribed?: boolean; compactMetrics?: boolean;
+}) {
   return <article className="work-card">
     <button className="cover" type="button" onClick={open} aria-label={'查看作品 ' + work.title}><Cover key={work.cover_url} work={work} /></button>
     <div className="work-content">
       <div className="work-meta"><span>{work.author || '未知作者'}</span><i />
-        <time>{displayTime(work.published_at)}</time>{label && <span className="tag">{label}</span>}</div>
+        <time>{displayTime(work.published_at)}</time>
+        {(label || transcribed) && <span className="work-tags">
+          {label && <span className="tag">{label}</span>}
+          {transcribed && <span className="tag transcribed">已转写</span>}
+        </span>}
+      </div>
       <button className="work-title" onClick={open}>{work.title}</button>
       {work.body && <p>{work.body}</p>}
       <Metrics work={work} compact={compactMetrics} />
@@ -171,15 +178,22 @@ function WorkDrawer({ workId, topicId, close, sourceKind, sourceId }: {
   const topicQuery = useApi<TopicDetail>('topics/' + topicId, '', Boolean(topicId));
   const topic = topicQuery.data;
   const work = topic?.work || workQuery.data;
+  const collectedTopicId = topic?.id ?? work?.topic_id;
   const query = topicId ? topicQuery : workQuery;
   const source = topic?.source || work?.sources?.find((item) => item.kind === sourceKind &&
     (!sourceId || item.source_id === sourceId));
   const adopt = useWorkspaceMutation(
     (selected: Source) => write<{ topic_id: string }>('topics', 'POST',
       { work_id: work?.id, kind: selected.kind, source_id: selected.source_id }),
-    ({ topic_id }) => navigate('/topics?topic_id=' + topic_id),
+    ({ topic_id }) => {
+      if (sourceKind === 'search') navigate('/topics?topic_id=' + topic_id);
+    },
   );
   const archive = useWorkspaceMutation((archived: boolean) => write<Topic>('topics/' + topicId, 'PATCH', { archived }));
+  const withdraw = useWorkspaceMutation((id: string) => write<{ id: string }>('topics/' + id, 'DELETE'), () => {
+    if (topicId) close();
+  });
+  const actionError = archive.error || adopt.error || withdraw.error;
   return <Dialog drawer fullWidthBody title={topicId ? '选题详情' : '作品详情'} description={source && sourceNames[source.kind]} close={close}>
     <LoadState pending={query.isPending} error={query.error} />
     {work && <>
@@ -192,11 +206,13 @@ function WorkDrawer({ workId, topicId, close, sourceKind, sourceId }: {
         {work.kind === 'article' && work.reads && <ReadCount metric={work.reads} />}
         <div className="inline-actions">
           <Original work={work} detail />
-          {topic ? <button className="button" disabled={archive.isPending}
+          {topic ? <button className="button" disabled={archive.isPending || withdraw.isPending}
             onClick={() => archive.mutate(!topic.archived)}>{topic.archived ? '恢复选题' : '归档选题'}</button>
             : work.topic_id ? <Link className="button primary" to={'/topics?topic_id=' + work.topic_id}>查看选题</Link>
             : source && <button className="button primary" disabled={adopt.isPending} onClick={() => adopt.mutate(source)}>
               <BookOpen size={15} />加入选题库</button>}
+          {collectedTopicId && <button type="button" className="button" disabled={withdraw.isPending || archive.isPending}
+            onClick={() => withdraw.mutate(collectedTopicId)}>取消收录</button>}
         </div>
       </div>
       {topic && <div className="detail-tabs" aria-label="选题内容">
@@ -216,7 +232,7 @@ function WorkDrawer({ workId, topicId, close, sourceKind, sourceId }: {
           <li key={item.kind + item.source_id}>{sourceNames[item.kind]} · {item.label} · {displayTime(item.discovered_at)}</li>)}</ul>}
         <p className="field-note">最近采集 · {displayTime(work.collected_at)}</p>
         </>}
-        {(archive.error || adopt.error) && <p className="form-error" role="alert">{(archive.error || adopt.error)?.message}</p>}
+        {actionError && <p className="form-error" role="alert">{actionError.message}</p>}
       </div>
     </>}
   </Dialog>;
@@ -234,10 +250,11 @@ export function FeedPage() {
   const settings = useApi<Settings>('settings');
   const accounts = useApi<Page<Account>>('accounts', 'limit=100');
   const accountId = params.get('account_id') || '';
+  const adopted = params.get('adopted') || '';
   const hasDates = params.has('since') || params.has('until');
   const requestedPeriod = params.get('recent') || '7d';
   const period = hasDates ? 'custom' : feedPeriods.includes(requestedPeriod) ? requestedPeriod : '7d';
-  const hasAdvancedFilters = Boolean(accountId || params.has('adopted') || hasDates);
+  const hasAdvancedFilters = Boolean(accountId || hasDates);
   const [showFilters, setShowFilters] = useState(hasAdvancedFilters);
   const selectedAccount = useApi<Account>('accounts/' + accountId, '', Boolean(accountId));
   const filters = apiParams('platform', 'q', 'account_id', 'adopted', 'cursor');
@@ -267,7 +284,13 @@ export function FeedPage() {
         !accounts.data || !accounts.data.next_cursor && !accountItems.some((account) =>
           account.tracking === 'active' && settings.data?.enabled_platforms.includes(account.platform))}
         onClick={() => scan.mutate()}><RefreshCw size={15} />扫描对标账号</button>} />
-    <div className="filter-bar"><PlatformTabs value={params.get('platform') || ''} change={(platform) => change({ platform }, true)} />
+    <div className="filter-bar simple">
+      <PlatformTabs value={params.get('platform') || ''} change={(platform) => change({ platform }, true)} />
+      <div className="segmented" role="group" aria-label="选题库收录状态">
+        {([['', '全部作品'], ['true', '已收录'], ['false', '未收录']] as const).map(([value, label]) =>
+          <button key={value} type="button" aria-pressed={adopted === value} className={adopted === value ? 'active' : ''}
+            onClick={() => change({ adopted: value }, true)}>{label}</button>)}
+      </div>
       <div className="filter-right">
         <SearchField label="检索作品" placeholder="搜索标题、作者…" value={params.get('q') || ''} onChange={(q) => change({ q }, true)} />
         <FilterSelect label="发布时间" value={period} onChange={changePeriod}>
@@ -288,10 +311,7 @@ export function FeedPage() {
         {selectedAccount.data && !accountItems.some((account) => account.id === accountId) &&
           <option value={accountId}>{selectedAccount.data.nickname}</option>}
       </FilterSelect>
-      <FilterSelect label="采纳状态" value={params.get('adopted') || ''} onChange={(adopted) => change({ adopted }, true)}>
-        <option value="">全部作品</option><option value="true">已采纳</option><option value="false">未采纳</option>
-      </FilterSelect>
-      <button className="text-button" type="button" onClick={() => change({ account_id: '', adopted: '', since: '', until: '' }, true)}>清除筛选</button>
+      <button className="text-button" type="button" onClick={() => change({ account_id: '', since: '', until: '' }, true)}>清除高级筛选</button>
       <details className="date-filters" open={hasDates || undefined}><summary>自定义日期</summary>
         <div className="extra-filters-content">
           <Field label="发布起始日期"><input type="date" value={params.get('since') || ''} onChange={(e) => change({ since: e.target.value }, true)} /></Field>
@@ -302,8 +322,9 @@ export function FeedPage() {
     {scan.error && <p className="form-error" role="alert">{scan.error.message}</p>}
     <LoadState pending={query.isPending} error={query.error} />
     {query.data && (query.data.items.length ? <div className="work-grid">{query.data.items.map((work) =>
-      <WorkCard key={work.id} work={work} open={() => change({ work_id: work.id })} />)}</div>
-      : <Empty title={params.has('platform') || params.has('q') || hasAdvancedFilters ? '没有符合条件的作品' : '暂无情报作品'}
+      <WorkCard key={work.id} work={work} label={work.topic_id ? '已加入选题库' : undefined}
+        open={() => change({ work_id: work.id })} />)}</div>
+      : <Empty title={params.has('platform') || params.has('q') || adopted || hasAdvancedFilters ? '没有符合条件的作品' : '暂无情报作品'}
         icon={SearchIcon} message="试试更换关键词或放宽筛选范围。" />)}
     {query.data && <Pager cursor={params.get('cursor') || ''} next={query.data.next_cursor} change={(cursor) => change({ cursor })} />}
     {workId && <WorkDrawer workId={workId} close={() => change({ work_id: '' })} sourceKind="scan" sourceId={accountId} />}
@@ -326,7 +347,8 @@ export function TopicsPage() {
     </div>
     <LoadState pending={query.isPending} error={query.error} />
     {query.data && (query.data.items.length ? <div className="work-grid">{query.data.items.map((topic) =>
-      <WorkCard key={topic.id} work={topic.work} label={sourceNames[topic.source.kind]} open={() => change({ topic_id: topic.id })} />)}</div>
+      <WorkCard key={topic.id} work={topic.work} label={sourceNames[topic.source.kind]}
+        transcribed={topic.transcribed} open={() => change({ topic_id: topic.id })} />)}</div>
       : <Empty title="没有匹配的选题" icon={BookOpen} message="可从情报流、关键词搜索或快速采集收录作品。" />)}
     {query.data && <Pager cursor={params.get('cursor') || ''} next={query.data.next_cursor} change={(cursor) => change({ cursor })} />}
     {topicId && <WorkDrawer topicId={topicId} close={() => change({ topic_id: '', tab: '' })} />}

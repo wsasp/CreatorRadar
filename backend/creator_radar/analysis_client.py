@@ -3,6 +3,7 @@ import json
 import sys
 from contextlib import suppress
 from hashlib import sha256
+from ipaddress import ip_address, ip_network
 from typing import Annotated
 from urllib.parse import urlsplit, urlunsplit
 
@@ -11,28 +12,36 @@ from pydantic import BaseModel, Field, StringConstraints, ValidationError, model
 
 PROMPT_VERSION = 1
 MAX_INPUT_CHARS = 80_000
+LAN_NETWORKS = tuple(ip_network(cidr) for cidr in (
+    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7",
+))
 
 
 class ProcessingError(Exception):
     pass
 
 
-def normalize_base(value: str) -> str:
+def normalize_base(value: str, *, allow_lan_http: bool = False) -> str:
     if not value.strip():
         return ""
     url = urlsplit(value.strip().rstrip("/"))
-    local = url.hostname in {"127.0.0.1", "localhost", "::1"}
+    host = url.hostname
+    local_http = host in {"127.0.0.1", "localhost", "::1"}
+    if allow_lan_http and host and url.scheme == "http":
+        with suppress(ValueError):
+            address = ip_address(host)
+            local_http = address.is_loopback or any(address in network for network in LAN_NETWORKS)
     if (
-        not url.hostname or url.username is not None or url.password is not None
+        not host or url.username is not None or url.password is not None
         or url.query or url.fragment or "\\" in value
         or any(character.isspace() or ord(character) < 32 for character in value.strip())
-        or (url.scheme != "https" and not (local and url.scheme == "http"))
+        or (url.scheme != "https" and not (local_http and url.scheme == "http"))
     ):
         raise ValueError("AI 地址须为 HTTPS，或本机 HTTP 地址")
     port = url.port
     if port == (443 if url.scheme == "https" else 80):
         port = None
-    host = f"[{url.hostname}]" if ":" in url.hostname else url.hostname
+    host = f"[{host}]" if ":" in host else host
     authority = f"{host}:{port}" if port is not None else host
     return urlunsplit((url.scheme, authority, url.path, "", ""))
 

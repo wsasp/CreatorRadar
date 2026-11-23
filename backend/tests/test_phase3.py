@@ -182,6 +182,16 @@ def test_three_entries_share_one_topic_and_feed_requires_scan(workspace):
     assert job(client, scan["job_id"])["result"]["added"] == 1
     results = get(client, f"feed?platform=bilibili&account_id={account_id}&adopted=true&q=收纳")
     assert [item["id"] for item in results["items"]] == [work["id"]]
+    for _ in range(2):
+        assert client.delete(PREFIX + f"topics/{topic_id}").is_success
+    assert get(client, "topics")["items"] == get(client, "topics?archived=true")["items"] == []
+    assert get(client, "feed?adopted=true")["items"] == []
+    assert get(client, "feed?adopted=false")["items"][0]["topic_id"] is None
+    assert get(client, results_url)["items"][0]["topic_id"] is None
+    assert get(client, f"works/{work['id']}")["topic_id"] is None
+    assert client.get(PREFIX + f"topics/{topic_id}").status_code == 404
+    assert post(client, "topics", source)["topic_id"] == topic_id
+    assert get(client, f"topics/{topic_id}")["archived"] is False
     with write_transaction(engine) as connection:
         connection.execute(works.update().values(published_at=1000))
     narrowed = f"feed?platform=bilibili&account_id={account_id}&adopted=true&q=收纳"

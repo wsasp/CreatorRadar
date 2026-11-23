@@ -52,6 +52,8 @@ ERRORS = {
     "short_unresolved": "分享短链无法解析，请换用有效的作品链接。",
     "work_unavailable": "平台未返回作品，请确认原帖仍可访问。",
     "douyin_detail_unavailable": "抖音作品页未返回可用的详情，请确认登录状态及原帖能否播放后重试。",
+    "douyin_scan_forbidden": "抖音拒绝读取作品列表（HTTP 403）。请确认该账号作品可见后重试。",
+    "douyin_scan_unavailable": "抖音主页未返回作品列表，请确认主页可正常加载后重试。",
     "work_id_mismatch": "平台返回了另一条作品，请检查原始链接。",
     "account_unavailable": "平台未返回账号资料，请检查主页地址。",
     "platform_disabled": "平台已停用，请在系统设置启用后重试。",
@@ -359,17 +361,23 @@ def source_view(connection, row):
 
 
 def adopt(connection, work, source, at):
+    snapshot = work_view(work)
     result = connection.execute(
         insert(topics)
         .values(
             id=uuid4().hex,
             work_id=work["id"],
             source=source,
-            snapshot=work_view(work),
+            snapshot=snapshot,
             created_at=at,
             archived=False,
         )
-        .on_conflict_do_nothing(index_elements=[topics.c.work_id])
+        .on_conflict_do_update(
+            index_elements=[topics.c.work_id],
+            set_={"withdrawn": False, "archived": False, "source": source,
+                  "snapshot": snapshot, "created_at": at},
+            where=topics.c.withdrawn,
+        )
         .returning(topics.c.id)
     ).scalar()
     return result or connection.scalar(select(topics.c.id).where(topics.c.work_id == work["id"]))

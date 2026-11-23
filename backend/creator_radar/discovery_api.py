@@ -99,7 +99,7 @@ class AsrSettings(BaseModel, extra="forbid", str_strip_whitespace=True):
     @field_validator("base_url")
     @classmethod
     def service_url(cls, value):
-        normalized = ai.normalize_base(value)
+        normalized = ai.normalize_base(value, allow_lan_http=True)
         if not normalized:
             return ""
         parts = urlsplit(normalized)
@@ -109,7 +109,9 @@ class AsrSettings(BaseModel, extra="forbid", str_strip_whitespace=True):
     @field_validator("api_key")
     @classmethod
     def key_value(cls, value):
-        return validated_key(value) if value is not None else None
+        if value is None:
+            return None
+        return validated_key(value) if value.get_secret_value().strip() else SecretStr("")
 
     @model_validator(mode="after")
     def engine_configuration(self):
@@ -258,14 +260,16 @@ def topic_query():
         topics.c.source,
         topics.c.snapshot,
         topics.c.archived,
+        topics.c.transcription_id.is_not(None).label("transcribed"),
         topics.c.created_at.label("adopted_at"),
-    ).join(topics)
+    ).join(topics).where(~topics.c.withdrawn)
 
 
 def topic_view(row, workspace, detail=False):
     result = {
         "id": row["topic_id"],
         "archived": row["archived"],
+        "transcribed": row["transcribed"],
         "source": row["source"],
         "created_at": d.stamp(row["adopted_at"]),
         "work": d.work_view(
@@ -313,7 +317,7 @@ def overview(connection):
             func.count().filter(video, topics.c.transcription_id.is_not(None)),
             func.count(topics.c.analysis_id),
         ).select_from(topics.join(works, topics.c.work_id == works.c.id))
-        .where(~topics.c.archived)
+        .where(~topics.c.archived, ~topics.c.withdrawn)
     ).one()
     return {
         "works_24h": connection.scalar(
@@ -482,7 +486,7 @@ def routes(engine, config, job_view):
     ):
         statement = (
             select(works, topics.c.id.label("topic_id"))
-            .outerjoin(topics)
+            .outerjoin(topics, (topics.c.work_id == works.c.id) & ~topics.c.withdrawn)
             .where(feed_source(account_id))
         )
         if platform:
@@ -520,7 +524,9 @@ def routes(engine, config, job_view):
     def get_work(work_id: Id):
         with engine.connect() as connection:
             work = d.require_row(connection, works, work_id, "找不到该作品。")
-            topic_id = connection.scalar(select(topics.c.id).where(topics.c.work_id == work_id))
+            topic_id = connection.scalar(select(topics.c.id).where(
+                topics.c.work_id == work_id, ~topics.c.withdrawn,
+            ))
             sources = connection.execute(
                 select(discoveries)
                 .where(
@@ -619,7 +625,7 @@ def routes(engine, config, job_view):
                     discoveries,
                     discoveries.c.work_id == works.c.id,
                 )
-                .outerjoin(topics, topics.c.work_id == works.c.id)
+                .outerjoin(topics, (topics.c.work_id == works.c.id) & ~topics.c.withdrawn)
                 .where(discoveries.c.search_id == search_id)
             )
             if platform:
@@ -749,11 +755,20 @@ def routes(engine, config, job_view):
     @router.patch("/topics/{topic_id}")
     def archive(topic_id: Id, body: ArchiveRequest):
         with write_transaction(engine) as connection:
-            d.require_row(connection, topics, topic_id, "找不到该选题。")
             connection.execute(
-                topics.update().where(topics.c.id == topic_id).values(archived=body.archived)
+                topics.update().where(topics.c.id == topic_id, ~topics.c.withdrawn)
+                .values(archived=body.archived)
             )
         return get_topic(topic_id)
+
+    @router.delete("/topics/{topic_id}")
+    def withdraw_topic(topic_id: Id):
+        with write_transaction(engine) as connection:
+            d.require_row(connection, topics, topic_id, "找不到该选题。")
+            connection.execute(
+                topics.update().where(topics.c.id == topic_id).values(withdrawn=True)
+            )
+        return {"id": topic_id}
 
     @router.get("/scan-plan")
     def scan_plan():
@@ -796,10 +811,7 @@ def routes(engine, config, job_view):
             except ai.ProcessingError:
                 ai_state = "unavailable"
         asr_base = values["asr"].get("base_url", "")
-        try:
-            asr_configured = bool(asr_base and funasr_client.service_key(config, asr_base))
-        except ai.ProcessingError:
-            asr_configured = False
+        asr_configured = bool(asr_base and funasr_client.service_key(config, asr_base))
         return {
             **values,
             "asr": {**values["asr"], "base_url": asr_base, "key_configured": asr_configured},
@@ -825,14 +837,13 @@ def routes(engine, config, job_view):
     @router.patch("/settings")
     def update_settings(body: SettingsChange):
         with write_transaction(engine) as connection:
-            if body.asr and body.asr.engine == "FunASR":
+            asr = body.asr
+            if asr and asr.engine == "FunASR" and "api_key" in asr.model_fields_set:
+                key = asr.api_key.get_secret_value() if asr.api_key is not None else None
                 try:
-                    if body.asr.api_key is not None:
-                        funasr_client.save_key(
-                            config, body.asr.base_url, body.asr.api_key.get_secret_value(),
-                        )
-                    else:
-                        processing.funasr_key(config, body.asr.base_url)
+                    # Explicit null clears a stored key. An empty field leaves it alone.
+                    if key != "":
+                        funasr_client.save_key(config, asr.base_url, key)
                 except ai.ProcessingError as exc:
                     code = str(exc)
                     raise d.problem(409, code, processing.MESSAGES[code]) from None

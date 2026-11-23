@@ -33,9 +33,10 @@ export function AsrPanel({ data }: { data: Settings }) {
   const changed = JSON.stringify(value) !== JSON.stringify(data.asr);
   const check = useMutation({ mutationFn: () => write<AsrCheck>('settings/asr/check', 'POST') });
   const save = useMutation({
-    mutationFn: () => write<Settings>('settings', 'PATCH', { asr: {
+    mutationFn: (action: 'save' | 'clear') => write<Settings>('settings', 'PATCH', { asr: {
       engine: value.engine, model: value.model, language: value.language,
-      ...(useFunAsr && { base_url: value.base_url, ...(pendingKey && { api_key: key }) }),
+      ...(useFunAsr && { base_url: value.base_url }),
+      ...(action === 'clear' ? { api_key: null } : pendingKey && { api_key: key }),
     } }),
     onSuccess: (saved) => {
       client.setQueryData(['settings', ''], saved);
@@ -53,7 +54,7 @@ export function AsrPanel({ data }: { data: Settings }) {
   return <section className="panel settings-panel">
     <h3><Activity size={18} />ASR 转写</h3>
     {!useFunAsr && data.integrations.asr === 'unavailable' && <p>本机 ASR 环境未就绪。重启工作台会自动准备默认模型，失败原因见启动日志。</p>}
-    <form onSubmit={(event) => { event.preventDefault(); save.mutate(); }}>
+    <form onSubmit={(event) => { event.preventDefault(); save.mutate('save'); }}>
       <div className="form-grid">
         <Field label="ASR 引擎"><select value={value.engine} disabled={disabled}
           onChange={(event) => {
@@ -80,17 +81,19 @@ export function AsrPanel({ data }: { data: Settings }) {
           <Field label="FunASR API 地址"><input type="url" required maxLength={2048} disabled={disabled}
             placeholder="https://example.com/v1" value={value.base_url ?? ''}
             onChange={(event) => update({ ...value, base_url: event.target.value })} /></Field>
-          <Field label="FunASR API Key"><input type="password" required={!hasKey} autoComplete="new-password"
+          <Field label="FunASR API Key（可选）"><input type="password" autoComplete="new-password"
             maxLength={1024} disabled={disabled} value={key}
-            placeholder={hasKey ? '已配置，输入可替换' : '输入 API Key'}
+            placeholder={hasKey ? '已配置，输入可替换' : '无需认证时可留空'}
             onChange={(event) => { setKey(event.target.value); save.reset(); check.reset(); }} /></Field>
         </>}
       </div>
       {useFunAsr && <p className="field-note">转写时会将作品音轨发送到所填的 OpenAI 兼容服务。</p>}
       <div className="inline-actions">
         <button className="button primary" disabled={disabled || (!changed && !pendingKey)}>保存 ASR 设置</button>
-        <button type="button" className="button" disabled={disabled || changed || pendingKey || (useFunAsr && !hasKey)}
+        <button type="button" className="button" disabled={disabled || changed || pendingKey}
           onClick={() => check.mutate()}>{check.isPending ? '正在检查' : '检查 ASR 环境'}</button>
+        {useFunAsr && hasKey && !changed && <button type="button" className="button" disabled={disabled || pendingKey}
+          onClick={() => save.mutate('clear')}>清除 FunASR Key</button>}
       </div>
       {check.data && <Values rows={([
         ['FFmpeg', 'ffmpeg'], ['FFprobe', 'ffprobe'], ['引擎', 'engine'], ['模型', 'model'],

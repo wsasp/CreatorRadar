@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { chromium, expect, test } from '@playwright/test';
@@ -88,6 +89,8 @@ test('empty workspace and quick capture validation', async ({ page, request }) =
   await page.getByRole('button', { name: '快速采集' }).click();
   const dialog = page.getByRole('dialog');
   await dialog.getByLabel('作品链接').fill('https://space.bilibili.com/123');
+  await page.mouse.click(8, 8);
+  await expect(dialog.getByLabel('作品链接')).toHaveValue('https://space.bilibili.com/123');
   await dialog.getByRole('button', { name: '提交采集' }).click();
   await expect(dialog.getByRole('alert')).toHaveText('这是创作者主页，请输入单条作品链接或分享短链。');
 });
@@ -194,6 +197,14 @@ test('discover, adopt, scan and revisit one topic through quick capture', async 
   await page.goto('/feed');
   await page.getByLabel('检索作品').fill('收纳');
   await expect(page.locator('.work-card')).toHaveCount(1);
+  await expect(page.locator('.work-card').getByText('已加入选题库', { exact: true })).toBeVisible();
+  const adoption = page.getByRole('group', { name: '选题库收录状态' });
+  await adoption.getByRole('button', { name: '已收录', exact: true }).click();
+  await expect(page.locator('.work-card')).toHaveCount(1);
+  await adoption.getByRole('button', { name: '未收录', exact: true }).click();
+  await expect(page.getByText('没有符合条件的作品')).toBeVisible();
+  await adoption.getByRole('button', { name: '全部作品', exact: true }).click();
+  await expect(page.locator('.work-card')).toHaveCount(1);
   await expect(page.getByRole('link', { name: '原链接' })).toHaveAttribute('target', '_blank');
   const detail = page.getByRole('button', { name: '详情' });
   await detail.scrollIntoViewIfNeeded();
@@ -205,6 +216,16 @@ test('discover, adopt, scan and revisit one topic through quick capture', async 
   await expect(page.getByLabel('检索作品')).toHaveValue('收纳');
   expect(await page.evaluate(() => window.scrollY)).toBe(scroll);
 
+  await detail.click();
+  const workDrawer = page.getByRole('dialog', { name: '作品详情' });
+  const feedUrl = page.url();
+  await workDrawer.getByRole('button', { name: '取消收录' }).click();
+  await expect(page.locator('.work-card').getByText('已加入选题库', { exact: true })).toHaveCount(0);
+  await workDrawer.getByRole('button', { name: '加入选题库' }).click();
+  await expect(workDrawer.getByRole('link', { name: '查看选题' })).toBeVisible();
+  await expect(page).toHaveURL(feedUrl);
+  await workDrawer.getByRole('button', { name: '关闭' }).click();
+
   await page.getByRole('button', { name: '快速采集' }).click();
   await page.getByLabel('作品链接').fill('https://www.bilibili.com/video/BV1Fixture01');
   await page.getByRole('button', { name: '提交采集' }).click();
@@ -215,6 +236,11 @@ test('discover, adopt, scan and revisit one topic through quick capture', async 
   await page.getByRole('button', { name: '关闭' }).click();
   await page.getByLabel('选题状态').selectOption('true');
   await expect(page.locator('.work-card')).toHaveCount(1);
+  await page.getByRole('button', { name: '详情' }).click();
+  const topicDrawer = page.getByRole('dialog', { name: '选题详情' });
+  await topicDrawer.getByRole('button', { name: '取消收录' }).click();
+  await expect(topicDrawer).toHaveCount(0);
+  await expect(page.locator('.work-card')).toHaveCount(0);
   await page.goto(searchUrl);
   await expect(page.locator('.work-card').filter({ hasText: 'B站' })).toBeVisible();
 });
@@ -317,6 +343,14 @@ test('transcribe and cite a topic, retaining the result after a failed rerun', a
     await drawer.getByRole('button', { name: '复制逐字稿' }).click();
     await expect(drawer.getByText('已复制逐字稿')).toBeVisible();
     expect(await page.evaluate(() => navigator.clipboard.readText())).toContain('桌面');
+    const downloadEvent = page.waitForEvent('download');
+    await drawer.getByRole('button', { name: '保存为 Markdown' }).click();
+    const download = await downloadEvent;
+    expect(download.suggestedFilename()).toMatch(/\.md$/);
+    const markdown = await readFile(await download.path(), 'utf8');
+    expect(markdown).toMatch(/^# .+\n\n/);
+    expect(markdown).toContain('桌面');
+    expect(markdown).not.toMatch(/^\*\*[\d:.]+–[\d:.]+\*\* /m);
     await aiTab.click();
     await drawer.getByRole('button', { name: '生成拆解' }).click();
     await expect(drawer.getByRole('heading', { name: '内容摘要' })).toBeVisible();

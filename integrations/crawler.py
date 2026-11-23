@@ -11,6 +11,7 @@ import os
 import re
 import socket
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import parse_qs, urljoin, urlsplit
 
@@ -34,6 +35,7 @@ DEFAULTS = {
 OPERATIONS = ("account", "scan", "search", "detail", "original", "short", "media", "article")
 METRICS = ("plays", "likes", "comments", "favorites", "shares")
 MAX_MEDIA_BYTES = 80 * 1024 * 1024
+DOUYIN_PAGE_HOSTS = {"www.douyin.com", "www-hj.douyin.com"}
 
 
 def match_host(host, domain):
@@ -281,7 +283,8 @@ async def list_results(client, platform, operation, account, keyword):
             rows = at(await client.get_creator_videos(native, 1, LIMIT, SearchOrderType.LAST_PUBLISH.value),
                       "list.vlist")
         elif platform == "douyin":
-            rows = at(await client.get_user_aweme_posts(native), "aweme_list")
+            async with douyin_profile_posts(client.playwright_page, native) as read_posts:
+                rows, _ = await read_posts("")
         else:
             from media_platform.xhs.help import parse_creator_info_from_url
 
@@ -309,33 +312,133 @@ async def list_results(client, platform, operation, account, keyword):
     return [r for r in rows if isinstance(r, dict) and r.get("model_type") not in {"hot_query", "rec_query"}][:LIMIT]
 
 
-async def douyin_page_detail(page, url, native):
-    def is_work_detail(response):
-        parsed = urlsplit(response.url)
-        return (parsed.scheme == "https" and parsed.netloc == "www.douyin.com"
-                and parsed.path == "/aweme/v1/web/aweme/detail/"
-                and parse_qs(parsed.query).get("aweme_id") == [native])
+def check_douyin_profile_status(status):
+    if status >= 400:
+        raise ProbeError({
+            401: "awaiting_login",
+            403: "douyin_scan_forbidden",
+            404: "account_unavailable",
+            429: "rate_limited",
+        }.get(status, "douyin_scan_unavailable"))
 
+
+@asynccontextmanager
+async def douyin_profile_posts(page, native):
+    """Read the posts delivered to the signed-in Douyin profile page, including prefetched pages."""
+    responses = {}
+    arrived = asyncio.Event()
+
+    def observe(response):
+        parsed = urlsplit(response.url)
+        if (parsed.scheme != "https" or parsed.netloc not in DOUYIN_PAGE_HOSTS
+                or parsed.path != "/aweme/v1/web/aweme/post/" or response.request.method != "GET"):
+            return
+        params = parse_qs(parsed.query, keep_blank_values=True)
+        if params.get("sec_user_id") != [native]:
+            return
+        cursor = params.get("max_cursor", ["0"])
+        if len(cursor) == 1:
+            responses.setdefault(cursor[0] or "0", response)
+            arrived.set()
+
+    async def read_posts(cursor):
+        cursor = str(cursor or 0)
+        try:
+            async with asyncio.timeout(22):
+                if cursor == "0":
+                    opened = await page.goto(f"https://www.douyin.com/user/{native}",
+                                             wait_until="domcontentloaded", timeout=0)
+                    if opened:
+                        check_douyin_profile_status(opened.status)
+                elif cursor not in responses:
+                    links = page.locator("a[href*='/video/']:visible, a[href*='/note/']:visible")
+                    await links.last.scroll_into_view_if_needed(timeout=0)
+                while cursor not in responses:
+                    arrived.clear()
+                    await arrived.wait()
+                response = responses.pop(cursor)
+                check_douyin_profile_status(response.status)
+                try:
+                    payload = await response.json()
+                except ValueError:
+                    raise ProbeError("douyin_scan_unavailable") from None
+        except TimeoutError:
+            verify = page.get_by_text(re.compile(r"^(请完成安全验证|安全验证|拖动滑块完成验证)$"))
+            if await verify.first.is_visible():
+                raise ProbeError("challenge") from None
+            login = page.get_by_text(re.compile(r"^(登录后查看作品|登录后查看更多|请先登录)$"))
+            if await login.first.is_visible():
+                raise ProbeError("awaiting_login") from None
+            raise ProbeError("douyin_scan_unavailable") from None
+
+        if not isinstance(payload, dict):
+            raise ProbeError("douyin_scan_unavailable")
+        if payload.get("status_code", 0) not in (0, None):
+            code = failure_code(RuntimeError(str(payload.get("status_msg", ""))))
+            raise ProbeError(code if code in {"challenge", "awaiting_login", "rate_limited"}
+                             else "douyin_scan_unavailable")
+        rows = payload.get("aweme_list")
+        more = payload.get("has_more")
+        if rows is None and more == 0 and "aweme_list" in payload:
+            rows = []
+        next_cursor = payload.get("max_cursor") if more else None
+        if not isinstance(rows, list) or (more and type(next_cursor) not in {str, int}):
+            raise ProbeError("douyin_scan_unavailable")
+        return rows, next_cursor
+
+    page.on("response", observe)
+    try:
+        yield read_posts
+    finally:
+        page.remove_listener("response", observe)
+
+
+async def douyin_page_detail(page, url, native):
+    responses = asyncio.Queue()
+
+    def observe(response):
+        parsed = urlsplit(response.url)
+        if (parsed.scheme == "https" and parsed.netloc in DOUYIN_PAGE_HOSTS
+                and parsed.path == "/aweme/v1/web/aweme/detail/"
+                and response.request.method == "GET"
+                and parse_qs(parsed.query).get("aweme_id") == [native]):
+            responses.put_nowait(response)
+
+    def check_status(status):
+        if status in {403, 429}:
+            raise ProbeError("rate_limited")
+        if status == 401:
+            raise ProbeError("awaiting_login")
+
+    page.on("response", observe)
     try:
         async with asyncio.timeout(20):
-            async with page.expect_response(is_work_detail, timeout=0) as pending:
-                opened = await page.goto(url, wait_until="domcontentloaded", timeout=0)
-                if opened and opened.status == 404:
+            opened = await page.goto(url, wait_until="domcontentloaded", timeout=0)
+            if opened:
+                check_status(opened.status)
+                if opened.status in {404, 410}:
                     raise ProbeError("work_unavailable")
-            response = await pending.value
+            while True:
+                response = await responses.get()
+                check_status(response.status)
+                if not response.ok:
+                    continue
+                try:
+                    payload = await response.json()
+                except ValueError:
+                    continue
+                if isinstance(payload, dict) and payload.get("status_code", 0) not in (0, None):
+                    code = failure_code(RuntimeError(str(payload.get("status_msg", ""))))
+                    if code in {"awaiting_login", "challenge", "rate_limited"}:
+                        raise ProbeError(code)
+                    continue
+                item = at(payload, "aweme_detail")
+                if isinstance(item, dict) and str(item.get("aweme_id")) == native:
+                    return item
     except TimeoutError:
         raise ProbeError("douyin_detail_unavailable") from None
-    if response.status in {403, 429}:
-        raise ProbeError("rate_limited")
-    if response.status == 401:
-        raise ProbeError("awaiting_login")
-    try:
-        item = at(await response.json(), "aweme_detail") if response.ok else None
-    except ValueError:
-        item = None
-    if not isinstance(item, dict) or str(item.get("aweme_id")) != native:
-        raise ProbeError("douyin_detail_unavailable")
-    return item
+    finally:
+        page.remove_listener("response", observe)
 
 
 async def detail(client, platform, url, validator=checked_url):

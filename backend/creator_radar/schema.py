@@ -11,6 +11,7 @@ from sqlalchemy import (
     Table,
     Text,
     UniqueConstraint,
+    false,
 )
 
 metadata = MetaData()
@@ -178,6 +179,7 @@ topics = Table(
     Column("source", JSON, nullable=False),
     Column("snapshot", JSON, nullable=False),
     Column("archived", Boolean, nullable=False),
+    Column("withdrawn", Boolean, nullable=False, server_default=false()),
     Column("created_at", Integer, nullable=False),
     Column("transcription_id", ForeignKey("transcriptions.id")),
     Column("analysis_id", ForeignKey("analyses.id")),

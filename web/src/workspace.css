@@ -119,6 +119,7 @@
 .evidence { font-size: 12px; margin-top: 5px; color: var(--purple); }
 .evidence summary { cursor: pointer; }
 .evidence blockquote { margin: 5px 0 5px 8px; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+.transcript-actions { margin-top: 12px; }
 .transcript p, .analysis-content p { overflow-wrap: anywhere; }
 .source-list { margin: 8px 0; padding-left: 20px; color: var(--muted); font-size: 12px; }
 .search-platform-status { list-style: none; padding: 0; margin: 8px 0 15px; }

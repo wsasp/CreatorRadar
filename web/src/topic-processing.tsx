@@ -25,6 +25,12 @@ function timeRange(start: number, end: number) {
   return timestamp(start) + '–' + timestamp(end);
 }
 
+function escapeMarkdown(text: string) {
+  return text.replace(/[\\`*_[\]{}<>#|~&]/g, '\\$&')
+    .replace(/^([ \t]*)([-+=])(?=[ \t=-]|$)/gm, '$1\\$2')
+    .replace(/^([ \t]*\d{1,9})([.)])(?=[ \t]|$)/gm, '$1\\$2');
+}
+
 function ProcessingStatus({ job, retry, pending }: {
   job: Job; retry: () => void; pending: boolean;
 }) {
@@ -58,7 +64,7 @@ function Evidence({ point, analysis }: { point: AnalysisPoint; analysis: Analysi
       if (!source) return null;
       return <details className="evidence" key={ref}>
         <summary>{source.start !== undefined && source.end !== undefined
-          ? '逐字稿 ' + timeRange(source.start, source.end)
+          ? '逐字稿 ' + timeRange(source.start, source.end) + (source.estimated ? '（估算）' : '')
           : '平台正文第 ' + ref + ' 段'}</summary>
         <blockquote>{source.text}</blockquote>
       </details>;
@@ -82,6 +88,7 @@ export function TopicProcessing({ topic, kind }: { topic: TopicDetail; kind: Pro
   const client = useQueryClient();
   const [copyStatus, setCopyStatus] = useState('');
   const { work, transcription, analysis } = topic;
+  const estimatedTiming = transcription?.segments.some((segment) => segment.estimated);
   const job = topic.processing_jobs[kind];
   const command = useMutation({
     mutationFn: (jobId?: string) => write<{ job_id: string }>(
@@ -98,9 +105,10 @@ export function TopicProcessing({ topic, kind }: { topic: TopicDetail; kind: Pro
 
   async function copyTranscript(withTimestamps: boolean) {
     if (!transcription) return;
-    const text = transcription.segments.map((segment) => withTimestamps
+    const segments = transcription.segments.map((segment) => withTimestamps
       ? timeRange(segment.start, segment.end) + ' ' + segment.text
       : segment.text).join('\n');
+    const text = withTimestamps && estimatedTiming ? '时间戳按文本位置估算。\n' + segments : segments;
     try {
       await navigator.clipboard.writeText(text);
       setCopyStatus(withTimestamps ? '已复制逐字稿' : '已复制纯文本逐字稿');
@@ -109,24 +117,40 @@ export function TopicProcessing({ topic, kind }: { topic: TopicDetail; kind: Pro
     }
   }
 
+  function saveTranscript() {
+    if (!transcription) return;
+    const title = work.title.trim().replace(/\s+/g, ' ') || '未命名作品';
+    const paragraphs = transcription.segments.map(({ text }) => escapeMarkdown(text));
+    const markdown = [`# ${escapeMarkdown(title)}`, ...paragraphs].join('\n\n') + '\n';
+    const filenameTitle = Array.from(title.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_')).slice(0, 60).join('');
+    const url = URL.createObjectURL(new Blob([markdown], { type: 'text/markdown;charset=utf-8' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `逐字稿-${filenameTitle}.md`;
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
   if (kind === 'asr') {
     if (!video) return <Empty title={work.kind === 'article' ? '图文作品' : '作品类型待确认'}
       message={work.kind === 'article' ? '可阅读平台正文，或直接生成 AI 拆解。' : '请检查原帖并重新采集。'} icon={FileText} />;
     return <>
       <div className="section-head"><div><h4>ASR 逐字稿</h4>
-        {transcription && <small>{transcription.engine} · {transcription.model} · {displayTime(transcription.created_at)}</small>}
+        {transcription && <small>{transcription.engine} · {transcription.model} · {displayTime(transcription.created_at)}
+          {estimatedTiming && ' · 时间戳为估算'}</small>}
       </div><button className="button primary" disabled={busy} onClick={() => command.mutate(undefined)}>
         <AudioLines size={16} />{busy ? '转写任务处理中' : transcription ? '重新转写' : '开始转写'}
       </button></div>
       {status}
       {transcription ? <>
-        <ul className="transcript">{transcription.segments.map(({ start, end, text }) =>
-          <li key={start}><span>{timeRange(start, end)}</span><p>{text}</p></li>)}</ul>
-        <div className="inline-actions">
+        <div className="inline-actions transcript-actions">
           <button type="button" className="button" onClick={() => copyTranscript(true)}>复制逐字稿</button>
           <button type="button" className="button" onClick={() => copyTranscript(false)}>复制纯文本</button>
+          <button type="button" className="button" onClick={saveTranscript}>保存为 Markdown</button>
           {copyStatus && <span role="status">{copyStatus}</span>}
         </div>
+        <ul className="transcript">{transcription.segments.map(({ start, end, text }) =>
+          <li key={start}><span>{timeRange(start, end)}</span><p>{text}</p></li>)}</ul>
       </> : <Empty title="暂无逐字稿" message="转写完成后会显示带时间戳的文本。" icon={AudioLines} />}
     </>;
   }

@@ -69,7 +69,7 @@ def main():
     elif args.command == "fetch-media":
         with write_transaction(make_engine(config)) as connection:
             work = connection.execute(select(works).join(topics).where(
-                topics.c.id == args.topic_id, works.c.kind == "video",
+                topics.c.id == args.topic_id, ~topics.c.withdrawn, works.c.kind == "video",
             )).mappings().first()
             if work is None:
                 parser.error("fetch-media requires a video topic ID")

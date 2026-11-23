@@ -6,12 +6,13 @@ import logging
 import os
 import re
 import sys
+from contextlib import nullcontext
 from html import unescape
 from pathlib import Path
 
 from common import ProbeError
 from crawler import (
-    Browser, account_details, at, canonical_input, detail, download, failure_code,
+    Browser, account_details, at, canonical_input, detail, douyin_profile_posts, download, failure_code,
     normalize, offline, prompt_login, resolve_short, wait_session,
 )
 from runtime_guard import validate_runtime
@@ -127,27 +128,20 @@ async def page(client, platform, request, index, cursor, search_id):
             more = index < response.get("numPages", index)
         return rows, index + 1 if more else None, search_id
     if platform == "douyin":
-        if scan:
-            response = await client.get_user_aweme_posts(checked(platform, url, "account"), cursor)
-            rows = response.get("aweme_list")
-            next_cursor = response.get("max_cursor")
-        else:
-            response = await client.search_info_by_keyword(keyword, offset=int(cursor or 0), search_id=search_id)
-            search_id = at(response, "extra.logid") or at(response, "log_pb.impr_id") or search_id
-            entries = response.get("data")
-            rows = None if not isinstance(entries, list) else [
-                row for entry in entries if isinstance(entry, dict)
-                for row in ([entry["aweme_info"]] if entry.get("aweme_info")
-                            else (at(entry, "aweme_mix_info.mix_items") or []))
-            ]
-            next_cursor = response.get("cursor") or int(cursor or 0) + len(entries or [])
+        response = await client.search_info_by_keyword(keyword, offset=int(cursor or 0), search_id=search_id)
+        search_id = at(response, "extra.logid") or at(response, "log_pb.impr_id") or search_id
+        entries = response.get("data")
+        rows = None if not isinstance(entries, list) else [
+            row for entry in entries if isinstance(entry, dict)
+            for row in ([entry["aweme_info"]] if entry.get("aweme_info")
+                        else (at(entry, "aweme_mix_info.mix_items") or []))
+        ]
+        next_cursor = response.get("cursor") or int(cursor or 0) + len(entries or [])
         if response.get("status_code", 0) not in (0, None):
             raise ProbeError(failure_code(RuntimeError(str(response.get("status_msg", "")))))
         if at(response, "search_nil_info.search_nil_type") in {"verify_check", "verify_type"}:
             raise ProbeError("challenge")
-        if rows is None and response.get("has_more") == 0 and (
-            "aweme_list" in response if scan else "data" in response
-        ):
+        if rows is None and response.get("has_more") == 0 and "data" in response:
             rows = []
         return rows, next_cursor if response.get("has_more") else None, search_id
     if scan:
@@ -173,12 +167,19 @@ async def collect(client, platform, request):
     rows = {}
     index, cursor, search_id = 1, "", ""
     cutoff = request.get("cutoff_seconds")
+    posts = nullcontext()
+    if platform == "douyin" and request["operation"] == "scan":
+        native = checked(platform, request["url"], "account")
+        posts = douyin_profile_posts(client.playwright_page, native)
     try:
-        async with asyncio.timeout(95):
+        async with asyncio.timeout(95), posts as read_posts:
             for _ in range(10):
-                items, next_cursor, search_id = await page(
-                    client, platform, request, index, cursor, search_id,
-                )
+                if read_posts:
+                    items, next_cursor = await read_posts(cursor)
+                else:
+                    items, next_cursor, search_id = await page(
+                        client, platform, request, index, cursor, search_id,
+                    )
                 if not isinstance(items, list):
                     raise ProbeError("unexpected_response")
                 dates = []
